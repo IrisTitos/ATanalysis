@@ -1,0 +1,361 @@
+clear all
+close all
+clc
+%%
+% DAMtiming         = '1min';     % {30sec,1min}
+% offseth           = 0;          % in h if stimuli and DAMs are not synchronized
+% offsetmin         = 0;          % in min if stimuli and DAMs are not synchronized
+%%
+spontoffsetmin    = -10;        % mins
+windowbefore      = 6;          % mins
+windowbeforeawake = 3;          % mins
+windowdeadbefore  = 4;         % hours
+windowafter       = 3;          % mins
+sleepthreshold    = 0;          % crossings
+numflies          = 32;         % number of flies i2n the monitor
+%%
+reply = input('Motor activity reading interval [30sec:0,1min:1]::','s');
+if isempty(reply)
+  reply = '1';
+end
+if strcmp(reply,'0')
+    DAMtiming = '30sec';
+    disp('INFO: Reading interval::30 sec');
+elseif strcmp(reply,'1')    
+    DAMtiming = '1min';
+    disp('INFO: Reading interval::1 min');
+else
+    fprintf(2,['ERROR: Reading interval not supported\n']); 
+    break;
+end
+%%
+reply = input('Sleep window in min::','s');
+if isempty(reply)
+  reply = '6';
+end
+windowbefore = str2num(reply);
+disp(['INFO: Sleep window:: ' reply 'min']);
+
+%%
+reply = input('Enable offset [y/n]::','s');
+if isempty(reply)
+  reply = 'n';
+end
+if strcmp(reply,'n')
+    offseth           = 0; 
+    offsetmin         = 0;         
+    disp('INFO: offset disabled');
+elseif strcmp(reply,'y')    
+    replyh = input('Enter offset hours::','s');
+    offseth           = str2num(replyh);
+    replym = input('Enter offset minutes::','s');
+    offsetmin         = str2num(replym);   
+    disp(['INFO: offset enabled::' replyh 'h, ' replym 'min']);
+else
+    fprintf(2,'ERROR: Offset mode not supported\n'); 
+    break;
+end
+%%
+if strcmp(DAMtiming,'30sec')
+    windowbefore      = windowbefore*2;         
+    windowdeadbefore  = windowdeadbefore*60*2; 
+    windowafter       = windowafter*2;   
+    windowbeforeawake = windowbeforeawake*2;
+elseif strcmp(DAMtiming,'1min')
+    windowbefore      = windowbefore;         
+    windowdeadbefore  = windowdeadbefore*60; 
+    windowafter       = windowafter;   
+    windowbeforeawake = windowbeforeawake;
+else
+    fprintf(2,['ERROR: mode not supported\n']);
+end
+%%
+reply = input('Enter the number of monitor(s) to analyze::','s');
+data    = textscan(reply,'%s','Delimiter',',');
+for ii =1:length(data{1,1})
+    monitorfile(ii) = str2num(data{1,1}{ii,1});
+end
+reply = input('Equal number of animals per group in the monitor(s)?[y/n]::','s');
+if isempty(reply)
+  reply = 'n';
+end
+if strcmp(reply,'y')
+    reply       = input('Enter number of animals per group::','s');
+    animalsv    = str2num(reply);
+    numofgroups = 32*length(monitorfile)/animalsv;
+    disp(['INFO: Number of groups::' num2str(numofgroups)]);
+else
+    disp(['INFO: Number of groups::' num2str(numofgroups)]);
+    fprintf(2,['ERROR: number of groups (' num2str(numofgroups) ...
+               ') not supported\n']); 
+    break;
+end
+reply = input(['Name ' num2str(numofgroups) ' genotypes::'],'s');
+data  = textscan(reply,'%s','Delimiter',',');
+for ii =1:length(data{1,1})
+    genotypes(ii) = {data{1,1}{ii,1}};
+end
+if length(genotypes)~=numofgroups
+    fprintf(2,['ERROR: wrong number of groups (' num2str(numofgroups) ...
+               ') and genotypes (' num2str(length(genotypes)) ')\n']); 
+    break;
+end
+
+reply = input('Activity before sleeping window enabled?[y/n]::','s');
+if isempty(reply)
+  reply = 'n';
+  disp('INFO: Check activity before sleeping window disabled');   
+end
+if strcmp(reply,'y')
+    disp('INFO: Check activity before sleeping window enabled');
+    enable_check_activity = 1; 
+elseif strcmp(reply,'n')
+    enable_check_activity = 0;
+    disp('INFO: Check activity before sleeping window disabled');   
+else
+    fprintf(2,'ERROR\n'); 
+    break;
+end
+
+
+reply = input('Save awake activity data?[y/n]::','s');
+if isempty(reply)
+  reply = 'n';
+end
+if strcmp(reply,'y') && length(monitorfile)==1
+    disp('INFO: Save awake activity enabled');
+    enable_save_activity = 1;
+elseif strcmp(reply,'y') && length(monitorfile)>1
+    fprintf(2,'ERROR: Only one monitor supported\n'); 
+    break; 
+elseif strcmp(reply,'n')
+    enable_save_activity = 0;
+    disp('INFO: Save awake activity disabled');   
+else
+    fprintf(2,'ERROR\n'); 
+    break;
+end
+
+%% Read Matlab stimulus file
+ReadStimulusFile;
+%% Read DAM file
+pmonitorsnorm = [];
+monitorheader = [];
+for ww =1:length(monitorfile)
+    disp(['INFO: Monitor file analyzed::' 'Monitor' num2str(monitorfile(ww)) '.txt']);
+    indicesm = [];
+    ReadMonitorFile;
+    % detect strain(s) for the monitor being analyzed
+    if length(animalsv) > 1     
+        if ww == 1
+            uu = 1;
+            tmp = animalsv(1);
+        else
+            uu   = uu + 1;
+            tmp  = animalsv(uu);
+            init = uu;
+        end        
+        for ee=uu+1:length(animalsv)
+            if tmp ~= 32
+                tmp = tmp + animalsv(ee);
+                uu  = uu + 1;
+            end
+        end
+        if ww == 1
+            animals = animalsv(1:uu);
+        else
+            animals = animalsv(init:uu);
+        end
+    else
+        animals = animalsv(1);
+    end
+    mheader = [];
+    for rr=1:length(animals)
+        mheader(rr)= monitorfile(ww);
+    end
+    monitorheader = [monitorheader mheader];
+    
+    % find stimulus in monitors data 
+    idxstim  = datefind(indicess,indicesm,0);
+    if strcmp(DAMtiming,'30sec')
+        idxspont = idxstim + (spontoffsetmin*2);
+    elseif strcmp(DAMtiming,'1min')
+        idxspont = idxstim + (spontoffsetmin);
+    end
+    idx      = [idxstim idxspont];
+    %detect 24 hours window
+    if idxspont(1) < windowdeadbefore
+        fprintf(2,['WARNING: Not enough data to determine dead flies prior to the first stimulus with a window of ' num2str(windowdeadbefore/(60*2)) 'h.\n']);    
+        windowdeadbefore = idxspont(1)-windowbefore;
+        fprintf(2,['WARNING: The window to determine dead flies is set to ' num2str(idx(1)/(60*2)) 'h.\n']);
+    end
+    %%
+    matrixbefore      = nan(size(idx,1),numflies,windowbefore);
+
+    matrixbeforeactivity = nan(size(idx,1),numflies);
+    
+    matbeforeawake    = nan(size(idx,1),numflies,windowbeforeawake);
+    matrixafter       = nan(size(idx,1),numflies,windowafter);
+    matrixdeadbefore  = nan(1,numflies,windowdeadbefore);
+    counter           = zeros(size(idx,2),size(idx,1),numofgroups/length(monitorfile));
+    for tt=1:size(idx,2)
+        for ii=1:size(idx,1)
+            for jj=1:windowbefore
+                rawdatabefore = raw{1,idx(ii,tt)-jj};
+                before        = rawdatabefore{1,1}(end-numflies+1:end,1)';
+                for kk=1:numflies
+                    matrixbefore(ii,kk,jj) = str2num(before{1,kk});
+                end
+            end 
+            %% changed
+            rawdatabeforeactivity = raw{1,idx(ii,tt)-windowbefore-1};
+            before                = rawdatabeforeactivity{1,1}(end-numflies+1:end,1)';
+            for kk=1:numflies
+                matrixbeforeactivity(ii,kk) = str2num(before{1,kk});
+            end 
+        end
+        if tt==1
+             for ii=1:size(idx,1)
+                for jj=1:windowbeforeawake
+                    rawdatabefore = raw{1,idx(ii,tt)-jj};
+                    before        = rawdatabefore{1,1}(end-numflies+1:end,1)';
+                    for kk=1:numflies
+                        matbeforeawake(ii,kk,jj) = str2num(before{1,kk});
+                    end
+                end      
+             end
+        end
+        for ii=1:size(idx,1)
+            for jj=1:windowafter
+                rawdataafter = raw{1,idx(ii,tt)+jj};
+                after        = rawdataafter{1,1}(end-numflies+1:end,1)';
+                for kk=1:numflies
+                    matrixafter(ii,kk,jj) = str2num(after{1,kk});
+                end
+            end
+        end
+        for jj=1:windowdeadbefore
+            rawdatabefore = raw{1,idx(1,tt)-jj};
+            before        = rawdatabefore{1,1}(end-numflies+1:end,1)';
+            for kk=1:numflies
+                matrixdeadbefore(1,kk,jj) = str2num(before{1,kk});
+            end
+        end 
+        %%
+        awakenflies                       = nan(size(idx,1),numflies);
+        if tt==1
+            awakenbefore                  = nan(size(idx,1),numflies);  
+            awakenafter                   = nan(size(idx,1),numflies);   
+        end
+        deadflies                         = find(nansum(squeeze(matrixdeadbefore(1,:,:))') == 0);
+        if tt==1
+            if deadflies ~=0
+                disp(['INFO: Dead fly(es) detected in tube(s)::' num2str(deadflies)]); 
+            end
+        end
+        for ii=1:size(idx,1)   
+            sleepingflies                 = find(nansum(squeeze(matrixbefore(ii,:,:))') <= sleepthreshold); 
+            sleepingflies                 = sleepingflies(find(~ismember(sleepingflies,deadflies))); %remove dead flies
+            
+            %% changed
+            movingflies                   = find(matrixbeforeactivity(ii,:) > 0);
+            if enable_check_activity == 1
+                sleepingflies             = sleepingflies(find(ismember(sleepingflies,movingflies)));   
+            end
+            %%
+            
+            for xx=1:numofgroups
+                for ff=1:length(sleepingflies)
+                    if(sleepingflies(ff)<=animals*xx && sleepingflies(ff)>animals*(xx-1))
+                        counter(tt,ii,xx)=counter(tt,ii,xx)+1;
+                    end
+                end
+            end
+            
+           fliesafterstimulus            = nansum(squeeze(matrixafter(ii,:,:))');
+           awakenflies(ii,sleepingflies) = fliesafterstimulus(sleepingflies);  
+                        
+            if tt==1
+                fliesdespertes                  = find(nansum(squeeze(matbeforeawake(ii,:,:))') > sleepthreshold);          
+                fliesawakenbefore               = nansum(squeeze(matbeforeawake(ii,:,:))');    
+                awakenbefore(ii,fliesdespertes) = fliesawakenbefore(fliesdespertes);        
+                awakenafter(ii,fliesdespertes)  = fliesafterstimulus(fliesdespertes);
+            end           
+        end
+        [row, col]     = find(isnan(awakenflies));
+        DAM            = awakenflies';
+        countawaken    = NaN(size(DAM));
+        countsleeping  = NaN(size(DAM));
+        for ii=1:size(DAM,1)
+            countsleeping(ii,find(~isnan(DAM(ii,:))==1))  = ones(1,length(find(~isnan(DAM(ii,:))==1)));
+            countawaken(ii,find(DAM(ii,:)>0))             = ones(1,length(find(DAM(ii,:)>0)));
+        end
+        %%
+        p = [];
+        nden = [];
+        if animals == 32
+            p    = nansum(nansum(countawaken))/nansum(nansum(countsleeping))*100;
+            nden = nansum(nansum(countsleeping));
+        else
+            for ii=1:32/animals
+                p(ii)    = nansum(nansum(countawaken(1+(ii-1)*animals:ii*animals,:)))/nansum(nansum(countsleeping(1+(ii-1)*animals:ii*animals,:)))*100;
+                nden(ii) = nansum(nansum(countsleeping(1+(ii-1)*animals:ii*animals,:)));
+            end
+        end
+        %%
+        if tt==1
+            pstimuli = p;
+            ndenstim = nden;
+        else
+            pspont    = p; 
+            ndenspont = nden;
+        end 
+    end
+    %pmonitorsnorm = [pmonitorsnorm (pstimuli-pspont)./(100-pspont)*100];
+    pmonitorsnorm = [pmonitorsnorm [(pstimuli-pspont)./(100-pspont)*100; pstimuli; ndenstim; pspont; ndenspont]];    
+end
+%%
+file = [filestimuli(1:end-4) '_pnorm'];   
+SavePercentages;
+disp(['INFO: Saved percentage normalized file::' path file]); 
+
+if enable_save_activity == 1  
+    file = filestimuli(1:end-4);  
+    %before
+    firstg  = reshape(awakenbefore(:,1:8),size(idx,1)*8,1)/windowbeforeawake;
+    secondg = reshape(awakenbefore(:,9:16),size(idx,1)*8,1)/windowbeforeawake;
+    thirdg  = reshape(awakenbefore(:,17:24),size(idx,1)*8,1)/windowbeforeawake;
+    fourthg = reshape(awakenbefore(:,25:32),size(idx,1)*8,1)/windowbeforeawake; 
+    varname = '_awakebefore';
+    SaveActivityDataToCSV;
+    disp(['INFO: Saved awake before activity file::' arxiu]);
+    bfirstg = firstg;
+    bsecondg = secondg;
+    bthirdg = thirdg;
+    bfourthg = fourthg;
+    %after
+    firstg  = reshape(awakenafter(:,1:8),size(idx,1)*8,1)/windowafter;
+    secondg = reshape(awakenafter(:,9:16),size(idx,1)*8,1)/windowafter;
+    thirdg  = reshape(awakenafter(:,17:24),size(idx,1)*8,1)/windowafter;
+    fourthg = reshape(awakenafter(:,25:32),size(idx,1)*8,1)/windowafter; 
+    varname = '_awakeafter';
+    SaveActivityDataToCSV;
+    disp(['INFO: Saved awake after activity file::' arxiu]);
+    %reactivity
+    r1 = (firstg-bfirstg);
+    r2 = (secondg-bsecondg);
+    r3 = (thirdg-bthirdg); 
+    r4 = (fourthg-bfourthg); 
+    IncCountg1 = sum(r1>0); TotalEventsg1 = sum(~isnan(r1));
+    IncCountg2 = sum(r2>0); TotalEventsg2 = sum(~isnan(r2));
+    IncCountg3 = sum(r3>0); TotalEventsg3 = sum(~isnan(r3));
+    IncCountg4 = sum(r4>0); TotalEventsg4 = sum(~isnan(r4));
+    
+    firstg = IncCountg1/TotalEventsg1*100;
+    secondg = IncCountg2/TotalEventsg2*100;
+    thirdg = IncCountg3/TotalEventsg3*100;
+    fourthg = IncCountg4/TotalEventsg4*100;
+    varname = '_reactivitypercentage';
+    SaveActivityDataToCSV;
+    disp(['INFO: Saved awake reactivity file::' arxiu]); 
+end
